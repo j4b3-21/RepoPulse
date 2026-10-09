@@ -49,11 +49,138 @@ Monorepo layout:
 - Docker + Docker Compose **or**
 - Node.js 20+ and npm 10+ for local development
 
-## Quick start (Docker)
+## Deployment
+
+RepoPulse is a **full-stack** app (Nginx + Express API). The recommended production path is **Docker Compose**. GitHub Pages alone cannot host this project because Pages serves static files only and cannot run the Node API that talks to GitHub.
+
+### Deploy with Docker Compose (recommended)
+
+Works on a laptop, VPS, or any host with Docker Engine + Compose v2.
 
 ```bash
-git clone <your-fork-or-remote-url>
-cd web-app   # or your clone directory name
+git clone https://github.com/j4b3-21/RepoPulse.git
+cd RepoPulse
+cp .env.example .env
+# Optional: edit .env (CORS_ORIGIN, GITHUB_TOKEN, rate limits, cache)
+docker compose up -d --build
+```
+
+Open [http://localhost:8080](http://localhost:8080) on the host (or `http://<server-ip>:8080` on a VPS).
+
+What Compose starts:
+
+| Service | Role | Published ports |
+|---|---|---|
+| `web` | Nginx: static UI + reverse proxy for `/api/` | `8080` → container `8080` |
+| `api` | Express API (GitHub client + scoring) | none (internal Docker network only) |
+
+Verify after deploy:
+
+```bash
+docker compose ps
+curl -s http://localhost:8080/healthz
+curl -s http://localhost:8080/api/v1/health/live
+curl -s http://localhost:8080/api/v1/health/ready
+```
+
+Useful Compose commands:
+
+```bash
+docker compose logs -f          # follow logs
+docker compose logs api --tail 100
+docker compose restart
+docker compose down             # stop
+docker compose down -v          # stop (no named volumes in MVP)
+```
+
+Update an existing deploy:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+### Production deploy behind HTTPS
+
+Do **not** expose the API container port publicly. Keep only Nginx on `:8080` (or bind it to localhost) and terminate TLS at the edge.
+
+1. Deploy Compose on the server as above.
+2. Point your DNS `A`/`AAAA` record at the server.
+3. Put Caddy, Traefik, nginx, or a cloud load balancer in front.
+4. Proxy `https://repopulse.example.com` → `http://127.0.0.1:8080`.
+5. Set in `.env`:
+   - `CORS_ORIGIN=https://repopulse.example.com`
+   - Optional `GITHUB_TOKEN=...` for higher GitHub API quota
+6. Restart: `docker compose up -d`.
+
+Example Caddyfile fragment:
+
+```caddy
+repopulse.example.com {
+  reverse_proxy 127.0.0.1:8080
+}
+```
+
+Example nginx edge fragment:
+
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name repopulse.example.com;
+  # ssl_certificate /path/fullchain.pem;
+  # ssl_certificate_key /path/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+```
+
+Security checklist for production:
+
+- Keep `.env` off git and readable only by the deploy user.
+- Never put `GITHUB_TOKEN` in the frontend or image layers.
+- Prefer binding host port `8080` to `127.0.0.1:8080` if only the edge proxy should reach it (edit `ports` in `docker-compose.yml` to `"127.0.0.1:8080:8080"`).
+- Review [SECURITY.md](SECURITY.md).
+
+### Deploy on a cloud VM (DigitalOcean, Vultr, AWS EC2, etc.)
+
+1. Create a small Linux VM (1 vCPU / 1 GB RAM is enough for light demo traffic).
+2. Install Docker Engine and the Compose plugin.
+3. Clone the repo, copy `.env.example` → `.env`, set `CORS_ORIGIN` to your public URL.
+4. Run `docker compose up -d --build`.
+5. Open firewall for `80`/`443` (edge proxy) or `8080` for a quick demo.
+6. Add HTTPS as in the previous section before sharing publicly.
+
+### Why not GitHub Pages?
+
+[GitHub Pages](https://pages.github.com/) hosts **static** sites. RepoPulse’s analyze flow requires the Express service under `/api/v1` (server-side GitHub calls, caching, rate limiting, optional token). Pages cannot run that process.
+
+Use Docker Compose (or any Node + reverse-proxy host) for a working deployment. A future static-only demo mode is not part of the current MVP.
+
+### Prebuilt container images (optional)
+
+Workflow [`.github/workflows/publish-images.yml`](.github/workflows/publish-images.yml) can publish to GitHub Container Registry (`ghcr.io`) after you enable Packages permissions and run the workflow.
+
+Until images are published and verified for your fork, deploy by building from source:
+
+```bash
+docker compose up -d --build
+```
+
+Do not advertise or rely on unpublished `docker pull` tags.
+
+## Quick start (Docker)
+
+Same as [Deploy with Docker Compose](#deploy-with-docker-compose-recommended):
+
+```bash
+git clone https://github.com/j4b3-21/RepoPulse.git
+cd RepoPulse
 cp .env.example .env
 docker compose up -d --build
 ```
@@ -179,13 +306,6 @@ npm test
 
 Tests are deterministic and mock GitHub. They cover URL parsing, scoring edge cases, API validation/errors, health endpoints, and essential UI states.
 
-## Updating the deployment
-
-```bash
-git pull
-docker compose up -d --build
-```
-
 ## Troubleshooting
 
 | Symptom | What to check |
@@ -195,30 +315,14 @@ docker compose up -d --build
 | UI loads but analyze fails | `docker compose logs api` |
 | CORS errors in local API calls | Align `CORS_ORIGIN` with the browser origin |
 | Compose unhealthy | `docker compose ps` and service logs |
+| Port 8080 already in use | Change the host mapping in `docker-compose.yml` or stop the other process |
 
 ## Rate-limit considerations
 
 - Prefer caching (`CACHE_TTL_SECONDS`) for repeated analyses.
 - Avoid hammering Analyze in demos without a token.
 - Even conditional/`304` responses consume GitHub quota.
-
-## Production deployment and HTTPS
-
-Recommended pattern:
-
-1. Run Compose on a private host/network.
-2. Terminate TLS at an edge reverse proxy (Caddy, Traefik, cloud LB, etc.).
-3. Proxy `https://repopulse.example.com` → `http://127.0.0.1:8080`.
-4. Set `CORS_ORIGIN=https://repopulse.example.com`.
-5. Keep `GITHUB_TOKEN` in a secret store / host env, not in git.
-
-Baseline security does not replace patching, access control, or threat modeling for your environment. See [SECURITY.md](SECURITY.md).
-
-## Prebuilt container images
-
-A GitHub Actions workflow (`.github/workflows/publish-images.yml`) can publish versioned images to GitHub Container Registry after repository permissions are configured.
-
-**Do not use unpublished image pull commands.** Prefer building from source with `docker compose up -d --build` until you have published and verified images for your fork.
+- See [Deployment](#deployment) for configuring an optional server-side `GITHUB_TOKEN`.
 
 ## Known limitations
 
