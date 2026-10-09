@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/api/package.json apps/api/
+RUN npm ci --workspace=@repopulse/shared --workspace=@repopulse/api --include-workspace-root
+
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/package.json ./package.json
+COPY --from=deps /app/package-lock.json ./
+COPY tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/
+COPY packages/shared/src packages/shared/src
+COPY apps/api/package.json apps/api/tsconfig.json apps/api/
+COPY apps/api/src apps/api/src
+RUN npm run build -w @repopulse/shared \
+  && test -f packages/shared/dist/index.d.ts \
+  && npm run build -w @repopulse/api \
+  && npm prune --omit=dev
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN addgroup -S repopulse && adduser -S repopulse -G repopulse \
+  && apk add --no-cache wget
+COPY --from=build --chown=repopulse:repopulse /app/package.json ./package.json
+COPY --from=build --chown=repopulse:repopulse /app/package-lock.json ./package-lock.json
+COPY --from=build --chown=repopulse:repopulse /app/node_modules ./node_modules
+COPY --from=build --chown=repopulse:repopulse /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=build --chown=repopulse:repopulse /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build --chown=repopulse:repopulse /app/apps/api/package.json ./apps/api/package.json
+COPY --from=build --chown=repopulse:repopulse /app/apps/api/dist ./apps/api/dist
+USER repopulse
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:3000/api/v1/health/live || exit 1
+CMD ["node", "apps/api/dist/index.js"]
