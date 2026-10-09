@@ -13,7 +13,7 @@
     "build": "npm run build -w @repopulse/shared && npm run build -w @repopulse/api && npm run build -w @repopulse/web",
     "test": "npm run test -w @repopulse/shared && npm run test -w @repopulse/api && npm run test -w @repopulse/web",
     "lint": "eslint .",
-    "typecheck": "npm run typecheck -w @repopulse/shared && npm run typecheck -w @repopulse/api && npm run typecheck -w @repopulse/web",
+    "typecheck": "npm run build -w @repopulse/shared && npm run typecheck -w @repopulse/shared && npm run typecheck -w @repopulse/api && npm run typecheck -w @repopulse/web",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
